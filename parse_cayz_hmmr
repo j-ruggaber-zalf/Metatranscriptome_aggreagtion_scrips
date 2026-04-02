@@ -1,0 +1,199 @@
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+import glob
+import subprocess
+from io import StringIO
+
+# get file names from folder, exluces 'vs' for files run with very sensitive
+files = [file for file in glob.glob("hmmsearch_dbCAN/*-dbCAN-hsearch.out")]# if "vs" not in file]
+files[:4]
+
+tmpfile = "hmmsearch_dbCAN/mt_10_rosette-dbCAN-hsearch.parse.tmp"
+input_file = files[0]
+subprocess.call("cat "+input_file+"  | grep -v '^#' | awk '{print $1,$3,$4,$6,$13,$16,$17,$18,$19}' | sed 's/ /\t/g' | sort -k 3,3 -k 8n -k 9n > " + tmpfile, shell=True)
+
+df = pd.read_csv(tmpfile, sep="\t", header=None, 
+                 names=["targetName", "targetLength", "queryName", "queryLength", "evalue", "qFrom", "qTo", "tFrom", "tTo"])
+df.head()
+
+print("Shape before: ", df.shape[0])
+print("Shape before: ", df["targetName"].unique().shape[0])
+df2 = df[df.evalue < 1e-10]
+print("Shape after: ", df2.shape)
+
+# at least 70% of target is matched to query
+print("Shape before: ", df2.shape)
+df3 = df2[(df2.tTo -df2.tFrom)/df2.targetLength > 0.7]
+print("Shape after: ", df3.shape)
+
+# only keep target sequence with lowest evalue
+print("Shape before: ", df3.shape)
+df4 = df3.loc[df3.groupby('targetName')['evalue'].idxmin()]
+# remove .hmm
+df4['queryName'] = df4['queryName'].str.replace('.hmm', '')
+
+print("Shape after ", df4.shape)
+
+result_dict ={}
+
+grouped = df4.sort_values(by=["queryName", "qFrom", "qTo"]).groupby('queryName')
+
+for group, group_data in grouped:
+    hmmLength = group_data.iloc[0,3]
+    countAlignedReads = group_data["qFrom"].count()
+    nAlignedBases = group_data["alnLen"].sum()
+    ngaps = 0
+    lenGaps = 0
+    start = group_data["qFrom"].min()
+    end = group_data["qTo"].max()
+    # iterate rows to check for gaps
+    for index, row in group_data.iterrows():
+        if index + 1 < len(group_data):
+            current_row = group_data.iloc[index]
+            next_row = group_data.iloc[index +1]
+            if (next_row["qFrom"] > current_row["qTo"]): 
+                gap_size =  gapsize + next_row["qFrom"] - current_row["qTo"]
+                ngaps += 1
+    hmmCoveredLength = round((end - start - lenGaps) / hmmLength * 100, 2)
+    hmmCoverage = round(nAlignedBases / hmmLength, 2)
+    
+    result_dict[group] = [hmmLength, countAlignedReads,  nAlignedBases, ngaps, lenGaps, hmmCoveredLength, hmmCoverage]
+
+    
+res = pd.DataFrame.from_dict(result_dict, orient='index', 
+                       columns= ["hmmLength", "countAlignedReads", "nAlignedBases", "ngaps", "lenGaps", "hmmCoveredLength", "hmmCoverage"])
+
+res2 = res[res.hmmCoveredLength > 35]
+
+# are the "gaps"?
+res[res.lenGaps >0]
+
+def summarize_and_filter_hmm_result(file, evalue=1e-10, targetThreshold = 0.7, hmmCov = 0.35):
+# read in dataframe from processed hmm domtblout file
+    df = pd.read_csv(file, sep="\t", header=None, 
+                     names=["targetName", "targetLength", "queryName", "queryLength", "evalue", "qFrom", "qTo", "tFrom", "tTo"])
+    # filter by evalue threshold
+    
+    print("Processing hmmsearch results from sample {file}".format(file = file))
+    print("Starting with {} rows which contain {} unique reads aligned to {} HMM profiles.".format(df.shape[0], df["targetName"].unique().shape[0], df["queryName"].unique().shape[0]))
+    df = df[df.evalue < evalue]
+    print("Rows after filtering for evalue < {evalue}: {rows}".format(evalue = evalue , rows = df.shape[0]))
+    # filter for reads that are at least x percent aligned to hmm 
+    df = df[(df.tTo -df.tFrom)/df.targetLength > targetThreshold]
+    print("Rows after filtering for read which aligned to > {targetThreshold}: {rows}".format(targetThreshold = targetThreshold , rows = df.shape[0]))
+    # filter duplicate reads, only keep best hit by evalue
+    df = df.loc[df.groupby('targetName')['evalue'].idxmin()]
+    print("Rows after removing duplicate reads: {rows}".format(rows = df.shape[0]))
+    # remove .hmmm
+    df['queryName'] = df['queryName'].str.replace('.hmm', '')
+    df["alnLen"] = df["qTo"] -df["qFrom"]
+    grouped = df.sort_values(by=["queryName", "qFrom", "qTo"]).groupby('queryName')
+    
+    result_dict ={}
+    for group, group_data in grouped:
+        hmmLength = group_data.iloc[0,3]
+        countAlignedReads = group_data["qFrom"].count()
+        nAlignedBases = group_data["alnLen"].sum()
+        ngaps = 0
+        lenGaps = 0
+        start = group_data["qFrom"].min()
+        end = group_data["qTo"].max()
+        
+        # iterate rows to check for gaps
+        for index, row in group_data.iterrows():
+            if index + 1 < len(group_data):
+                current_row = group_data.iloc[index]
+                next_row = group_data.iloc[index +1]
+                if (next_row["qFrom"] > current_row["qTo"]): 
+                    gap_size =  gapsize + next_row["qFrom"] - current_row["qTo"]
+                    ngaps += 1
+                    
+        hmmCoveredLength = round((end - start - lenGaps) / hmmLength , 2)
+        hmmCoverage = round(nAlignedBases / hmmLength, 2)
+
+        result_dict[group] = [hmmLength, countAlignedReads,  nAlignedBases, ngaps, lenGaps, hmmCoveredLength, hmmCoverage]
+
+    res = pd.DataFrame.from_dict(result_dict, orient='index', 
+                       columns= ["hmmLength", "countAlignedReads", "nAlignedBases", "ngaps", "lenGaps", "hmmCoveredLength", "hmmCoverage"])
+    print("Hmm before filtering for hmm coverage: ", res.shape[0])
+    res = res[res.hmmCoveredLength > hmmCov]
+    print("Hmm with coverage > ", hmmCov, ": " ,res.shape[0])
+    print("==================")
+    return(res)
+
+
+df_build = {}
+for file in files:
+    tmpfile = file + ".tmp"
+    sample = os.path.splitext(os.path.basename(file))[0].replace("-dbCAN-hsearch", "")
+    print(sample)
+    subprocess.call("cat "+ file +"  | grep -v '^#' | awk '{print $1,$3,$4,$6,$13,$16,$17,$18,$19}' | sed 's/ /\t/g' | sort -k 3,3 -k 8n -k 9n > " + tmpfile, shell=True)
+    df_build[sample] = summarize_and_filter_hmm_result(tmpfile, evalue=1e-10, targetThreshold = 0.7, hmmCov = 0.35)
+
+resdf = []
+for key, df in df_build.items():
+    resdf.append(df.rename(columns={"countAlignedReads": key})[key])
+resdf= pd.DataFrame(resdf).T
+resdf.fillna(0)
+
+
+def rpk(row):
+    rpk = row["nAlignedBases"]/ row["hmmLength"] * 1000 / 3
+    return(round(rpk,2))
+
+
+def tpm(row, rpk_sum):
+    tpm = row["rpk"]/(rpk_sum/1e6)
+    return(round(tpm,2))
+
+
+def rpkm(row, summedreads):
+    scale = summedreads/1e6
+    rpm = row["nAlignedBases"]/scale
+    rpkm = rpm / row["hmmLength"] /(1000/3)
+    return(round(rpkm,2))
+
+# make count table 
+res_df = []
+for key, df in df_build.items():
+    res_df.append(df.rename(columns={"countAlignedReads": key})[key])
+res_df= pd.DataFrame(res_df).T
+res_df.fillna(0).to_csv("hmmsearch-cleanedMergedReads-CAZy-counts.tsv", sep="\t")
+
+# make rkp table
+res_df = []
+for key, df in df_build.items():
+    df[key] = df.apply(rpk, axis=1)
+    res_df.append(df[key])
+res_df= pd.DataFrame(res_df).T
+
+res_df.fillna(0).to_csv("hmmsearch-cleanedMergedReads-CAZy-rpk.tsv", sep="\t")
+
+# make tpm table
+res_df = []
+for key, df in df_build.items():
+    # make rpk
+    df["rpk"] = df.apply(rpk, axis=1)
+    sum_rpk = df["rpk"].sum()
+    df[key] = df.apply(tpm, args=(sum_rpk,), axis=1)
+    res_df.append(df[key])
+res_df= pd.DataFrame(res_df).T
+res_df
+res_df.fillna(0).to_csv("hmmsearch-cleanedMergedReads-CAZy-TPM.tsv", sep="\t")
+
+
+# make rpkm table
+res_df = []
+for key, df in df_build.items():
+    # make rpk
+    summedreads = df["countAlignedReads"].sum()
+    df[key] = df.apply(rpkm, args=(summedreads,), axis=1)
+    res_df.append(df[key])
+res_df= pd.DataFrame(res_df).T
+res_df
+res_df.fillna(0).to_csv("hmmsearch-cleanedMergedReads-CAZy-RPKM.tsv", sep="\t")
+
+
+
