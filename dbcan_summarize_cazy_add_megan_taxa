@@ -1,0 +1,160 @@
+import pandas as pd
+import numpy as np
+import os
+import glob
+
+# get file names from folder, exluces 'vs' for files run with very sensitive
+files = [file for file in glob.glob("06_dbCAN_run_v4/*/hmmer.out")]# if "vs" not in file]
+files[:4]
+print(len(files))
+  
+df = pd.read_csv(files[1], sep="\t", header=None, skiprows=1,
+                 names=["targetName", "targetLength", "queryName", "queryLength", "evalue", "qFrom", "qTo", "tFrom", "tTo", "hmmCov"])
+df.head()
+
+def filter_hmm_result(file, evalue=1e-10, hmmCov = 0.30):
+# read in dataframe from processed hmm domtblout file
+    df = pd.read_csv(file, sep="\t", header=None, 
+                     skiprows=1, # if newer dbcan, skip first row, because this files has headers
+                 names=["targetName", "targetLength", "queryName", "queryLength", "evalue", 
+                        "qFrom", "qTo", "tFrom", "tTo", "hmmCov"])
+    # filter by evalue threshold
+    
+    print("Processing hmmsearch results from sample {file}".format(file = file))
+    print("Starting with {} rows which contain {} unique contigs aligned to {} HMM profiles.".format(df.shape[0], 
+                                                                                                   df["queryName"].unique().shape[0], 
+                                                                                                   df["targetName"].unique().shape[0]))
+    df = df[df.evalue < evalue]
+    print("Rows after filtering for evalue < {evalue}: {rows}".format(evalue = evalue , rows = df.shape[0]))
+    # Filter by HMM coverage
+    df = df[df.hmmCov >= hmmCov]
+    print("Rows after filtering for hmm coverage >= {}: {}".format(hmmCov, df.shape[0]))
+    # filter duplicate reads, only keep best hit by evalue
+    df = df.loc[df.groupby('queryName')['evalue'].idxmin()]
+    print("Rows after removing duplicate reads: {rows}".format(rows = df.shape[0]))
+    # remove .hmm
+    df['targetName'] = df['targetName'].str.replace('.hmm',"", regex=False)
+    df['queryName'] = df['queryName'].str.replace(r'_[0-9]+$', '')
+    return(df)
+
+filter_hmm_result(files[1])
+
+samples = pd.read_csv("samples.txt", header=None, names=["Name"])["Name"]
+df_build = {}
+for s in samples:
+    hmm_file = "06_dbCAN_run_v4/" + s + "/hmmer.out"
+    df = filter_hmm_result(hmm_file)
+    df["queryName"] = df["queryName"].str.replace(
+        r"_[0-9]+$",
+        "",
+        regex=True
+    )
+    ab_file = "06_Trinity/abundance-RSEM/"+ s + "_RSEM.isoforms.results"
+    ab = pd.read_csv(ab_file, sep="\t")
+    tax_file = "06_Trinity-diamond-faa/" + s + "-r2c.txt"
+    tax = pd.read_csv(
+        tax_file,
+        sep="\t",
+        header=None,
+        names=["queryName", "TaxString"]
+    )
+   # Remove trailing "_1" so IDs match dbCAN/RSEM
+    tax["queryName"] = tax["queryName"].str.replace(
+        r'_[0-9]+$', '', regex=True
+    )
+ # Merge dbCAN annotation with taxonomy
+    df_tax = pd.merge(
+        df,
+        tax,
+        on="queryName",
+        how="left"
+    )
+
+    print("Number of NA taxa:", df_tax.TaxString.isna().sum())
+
+    # Merge with abundance
+    df2 = pd.merge(
+        df_tax,
+        ab,
+        left_on="queryName",
+        right_on="transcript_id",
+        how="left"
+    )[
+        ["targetName", "TaxString",
+         "expected_count", "TPM", "FPKM"]
+    ]
+
+    # Sum by CAZy family and taxonomy
+    df_build[s] = (
+        df2
+        .fillna("[D] no_MEGAN_assignment")
+        .groupby(["targetName", "TaxString"])
+        .sum()
+    )
+# Change Megan taxonomic hit to table
+def parse_tax_string(tax_string):
+    tax_dict = {}
+    if isinstance(tax_string, str):
+        for item in tax_string.split(';'):
+            item = item.strip()
+            if item:
+                key = item[1]
+                value = item[4:]
+                tax_dict[key] = value
+    return tax_dict
+
+column_names = {
+    'D': 'Domain',
+    'K': 'Kingdom',
+    'P': 'Phylum',
+    'C': 'Class',
+    'O': 'Order',
+    'F': 'Family',
+    'G': 'Genus',
+    'S': 'Species'
+}
+
+
+resdf = []
+for key, df in df_build.items():
+    resdf.append(df.rename(columns={"expected_count": key})[key])
+resdf = pd.DataFrame(resdf).T.fillna(0)
+# Extract taxonomy
+tax_data = (
+    resdf.reset_index()["TaxString"]
+    .apply(parse_tax_string)
+    .apply(pd.Series)
+)
+tax_data.rename(columns=column_names, inplace=True)
+# Combine taxonomy with abundance table
+resdf = pd.concat(
+    [resdf.reset_index(), tax_data],
+    axis=1
+)
+resdf.to_csv(
+    "06_dbCAN_run_v4/CAZy_expected_counts_hmm_from_run_dbCAN_with_meganTax.tsv",
+    sep="\t",
+    index=False
+)
+
+resdf = []
+for key, df in df_build.items():
+    resdf.append(df.rename(columns={"TPM": key})[key])
+resdf = pd.DataFrame(resdf).T.fillna(0)
+# Extract taxonomy
+tax_data = (
+    resdf.reset_index()["TaxString"]
+    .apply(parse_tax_string)
+    .apply(pd.Series)
+)
+tax_data.rename(columns=column_names, inplace=True)
+# Combine taxonomy with abundance table
+resdf = pd.concat(
+    [resdf.reset_index(), tax_data],
+    axis=1
+)
+resdf.to_csv(
+    "06_dbCAN_run_v4/CAZy_TPM_hmm_from_run_dbCAN_with_meganTax.tsv",
+    sep="\t",
+    index=False
+)
