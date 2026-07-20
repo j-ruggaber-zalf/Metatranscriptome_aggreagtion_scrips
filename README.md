@@ -1,6 +1,7 @@
 # Python scripts used for data aggegation in the publication: 
 # Functional metatranscriptomics of the rhizosphere: towards an understanding of metabolic processes of the microbial carbon pump
-Scripts were run as Jupyter notebooks using Python3.6 on HPC running AlmaLinux (glibc 2.34). The script does not require specialized hardware as it is mostly parsing text and calculating TPM/RPKM.  
+Scripts were run as Jupyter notebooks ona HPC running AlmaLinux (glibc 2.34). A conda environment with Python 3.11 installing the required packages was setup before runing the scripts as Jupyter notebooks. The script does not require specialized hardware as it is mostly parsing text from source files.  
 
-The parse cazy hmmr file uses hmmserach dbCAN files as input and calculates an intermediate lenght normalization, before TPM are RPKM are calculated de novo and parsed as tables.
-The summarize_kofamscan_add_megan_tax uses RSEM isoforms, and results from kofamscan and adds the taxonomic best match fro MEGAN. TPM, RPK and RPKM are not calculated as they are provided from the input files already. 
+The summarize_kofamscan_add_megan_tax uses RSEM isoforms, and results from kofamscan and adds the taxonomic best match from MEGAN. TPM, RPK, RPKM and counts are provided from the RSEM input files.
+The summarize cazy---- likewise uses the RSEM isoforms and results from dbcan/hmmsearch and adds the best taxonomic match from MEGAN. Filtering of the hmm results with evalue of 1e-10 and hmmcovrage of 0.30 is done before parsing the results from the input files
+
